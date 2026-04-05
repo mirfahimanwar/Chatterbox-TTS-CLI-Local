@@ -87,6 +87,23 @@ def _load_model():
     return _model
 
 
+def _split_sentences(text: str, max_chars: int = 250) -> list[str]:
+    """Split text into chunks of at most max_chars at sentence boundaries."""
+    import re
+    parts = re.split(r'(?<=[.!?])\s+', text.strip())
+    chunks, current = [], ""
+    for part in parts:
+        candidate = (current + " " + part).strip() if current else part
+        if len(candidate) > max_chars and current:
+            chunks.append(current)
+            current = part
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks or [text]
+
+
 def _generate(
     text: str,
     voice: str | None,
@@ -111,6 +128,31 @@ def _generate(
     # generate() is a generator that yields a single tensor
     wav = next(model.generate(text, **kwargs))
     return wav, model.sr
+
+
+def _generate_chunked(
+    text: str,
+    voice: str | None,
+    exaggeration: float,
+    cfg_weight: float,
+    seed: int | None,
+) -> tuple:
+    """Split long text into sentence chunks, generate each, and concatenate."""
+    import torch
+    chunks = _split_sentences(text)
+    if len(chunks) == 1:
+        return _generate(text, voice, exaggeration, cfg_weight, seed)
+
+    print(f"  (splitting into {len(chunks)} chunks)")
+    parts = []
+    sr = None
+    for i, chunk in enumerate(chunks, 1):
+        preview = chunk[:60] + ("..." if len(chunk) > 60 else "")
+        print(f"  [chunk {i}/{len(chunks)}] {preview}")
+        wav, sr = _generate(chunk, voice, exaggeration, cfg_weight, seed)
+        parts.append(wav)
+    combined = torch.cat(parts, dim=-1)
+    return combined, sr
 
 
 def _save(wav, sr: int, out_path: str | None) -> str:
@@ -152,7 +194,7 @@ def _play(wav, sr: int) -> None:
 
 def _run_once(args) -> None:
     t0 = time.time()
-    wav, sr = _generate(
+    wav, sr = _generate_chunked(
         text=args.text,
         voice=args.voice,
         exaggeration=args.exaggeration,
@@ -246,7 +288,7 @@ def _run_interactive(args) -> None:
 
         t0 = time.time()
         try:
-            wav, sr = _generate(
+            wav, sr = _generate_chunked(
                 text=line,
                 voice=voice,
                 exaggeration=exaggeration,
